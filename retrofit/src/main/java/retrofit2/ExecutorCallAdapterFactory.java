@@ -55,24 +55,26 @@ final class ExecutorCallAdapterFactory extends CallAdapter.Factory {
     }
 
     @Override public void enqueue(final Callback<T> callback) {
+      if (callback == null) throw new NullPointerException("callback == null");
+
       delegate.enqueue(new Callback<T>() {
-        @Override public void onResponse(final Call<T> call, final Response<T> response) {
+        @Override public void onResponse(Call<T> call, final Response<T> response) {
           callbackExecutor.execute(new Runnable() {
             @Override public void run() {
               if (delegate.isCanceled()) {
                 // Emulate OkHttp's behavior of throwing/delivering an IOException on cancellation.
-                callback.onFailure(call, new IOException("Canceled"));
+                callback.onFailure(ExecutorCallbackCall.this, new IOException("Canceled"));
               } else {
-                callback.onResponse(call, response);
+                callback.onResponse(ExecutorCallbackCall.this, response);
               }
             }
           });
         }
 
-        @Override public void onFailure(final Call<T> call, final Throwable t) {
+        @Override public void onFailure(Call<T> call, final Throwable t) {
           callbackExecutor.execute(new Runnable() {
             @Override public void run() {
-              callback.onFailure(call, t);
+              callback.onFailure(ExecutorCallbackCall.this, t);
             }
           });
         }

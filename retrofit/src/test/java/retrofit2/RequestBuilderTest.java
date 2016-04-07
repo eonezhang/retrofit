@@ -1,4 +1,18 @@
-// Copyright 2013 Square, Inc.
+/*
+ * Copyright (C) 2013 Square, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package retrofit2;
 
 import java.io.IOException;
@@ -12,7 +26,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import okhttp3.HttpUrl;
 import okhttp3.MediaType;
+import okhttp3.MultipartBody;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.ResponseBody;
@@ -1096,6 +1112,37 @@ public final class RequestBuilderTest {
     assertThat(request.body()).isNull();
   }
 
+  @Test public void getWithHttpUrl() {
+    class Example {
+      @GET
+      Call<ResponseBody> method(@Url HttpUrl url) {
+        return null;
+      }
+    }
+
+    Request request = buildRequest(Example.class, HttpUrl.parse("http://example.com/foo/bar/"));
+    assertThat(request.method()).isEqualTo("GET");
+    assertThat(request.headers().size()).isZero();
+    assertThat(request.url()).isEqualTo(HttpUrl.parse("http://example.com/foo/bar/"));
+    assertThat(request.body()).isNull();
+  }
+
+  @Test public void getWithNullUrl() {
+    class Example {
+      @GET
+      Call<ResponseBody> method(@Url HttpUrl url) {
+        return null;
+      }
+    }
+
+    try {
+      buildRequest(Example.class, (HttpUrl) null);
+      fail();
+    } catch (NullPointerException expected) {
+      assertThat(expected).hasMessage("@Url parameter is null.");
+    }
+  }
+
   @Test public void getWithNonStringUrlThrows() {
     class Example {
       @GET
@@ -1109,7 +1156,8 @@ public final class RequestBuilderTest {
       fail();
     } catch (IllegalArgumentException e) {
       assertThat(e).hasMessage(
-          "@Url must be String, java.net.URI, or android.net.Uri type. (parameter #1)\n"
+          "@Url must be okhttp3.HttpUrl, String, java.net.URI, or android.net.Uri type."
+              + " (parameter #1)\n"
               + "    for method Example.method");
     }
   }
@@ -1379,6 +1427,200 @@ public final class RequestBuilderTest {
         .contains("\r\npong2\r\n--");
   }
 
+  @Test public void multipartRequiresName() {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@Part RequestBody part) {
+        return null;
+      }
+    }
+
+    try {
+      buildRequest(Example.class, new Object[] { null });
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertThat(e).hasMessage(
+          "@Part annotation must supply a name or use MultipartBody.Part parameter type. (parameter #1)\n"
+              + "    for method Example.method");
+    }
+  }
+
+  @Test public void multipartIterableRequiresName() {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@Part List<RequestBody> part) {
+        return null;
+      }
+    }
+
+    try {
+      buildRequest(Example.class, new Object[] { null });
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertThat(e).hasMessage(
+          "@Part annotation must supply a name or use MultipartBody.Part parameter type. (parameter #1)\n"
+              + "    for method Example.method");
+    }
+  }
+
+  @Test public void multipartArrayRequiresName() {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@Part RequestBody[] part) {
+        return null;
+      }
+    }
+
+    try {
+      buildRequest(Example.class, new Object[] { null });
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertThat(e).hasMessage(
+          "@Part annotation must supply a name or use MultipartBody.Part parameter type. (parameter #1)\n"
+              + "    for method Example.method");
+    }
+  }
+
+  @Test public void multipartOkHttpPartForbidsName() {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@Part("name") MultipartBody.Part part) {
+        return null;
+      }
+    }
+
+    try {
+      buildRequest(Example.class, new Object[] { null });
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertThat(e).hasMessage(
+          "@Part parameters using the MultipartBody.Part must not include a part name in the annotation. (parameter #1)\n"
+              + "    for method Example.method");
+    }
+  }
+
+  @Test public void multipartOkHttpPart() throws IOException {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@Part MultipartBody.Part part) {
+        return null;
+      }
+    }
+
+    MultipartBody.Part part = MultipartBody.Part.createFormData("kit", "kat");
+    Request request = buildRequest(Example.class, part);
+    assertThat(request.method()).isEqualTo("POST");
+    assertThat(request.headers().size()).isZero();
+    assertThat(request.url().toString()).isEqualTo("http://example.com/foo/bar/");
+
+    RequestBody body = request.body();
+    Buffer buffer = new Buffer();
+    body.writeTo(buffer);
+    String bodyString = buffer.readUtf8();
+
+    assertThat(bodyString)
+        .contains("Content-Disposition: form-data;")
+        .contains("name=\"kit\"\r\n")
+        .contains("\r\nkat\r\n--");
+  }
+
+  @Test public void multipartOkHttpIterablePart() throws IOException {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@Part List<MultipartBody.Part> part) {
+        return null;
+      }
+    }
+
+    MultipartBody.Part part1 = MultipartBody.Part.createFormData("foo", "bar");
+    MultipartBody.Part part2 = MultipartBody.Part.createFormData("kit", "kat");
+    Request request = buildRequest(Example.class, Arrays.asList(part1, part2));
+    assertThat(request.method()).isEqualTo("POST");
+    assertThat(request.headers().size()).isZero();
+    assertThat(request.url().toString()).isEqualTo("http://example.com/foo/bar/");
+
+    RequestBody body = request.body();
+    Buffer buffer = new Buffer();
+    body.writeTo(buffer);
+    String bodyString = buffer.readUtf8();
+
+    assertThat(bodyString)
+        .contains("Content-Disposition: form-data;")
+        .contains("name=\"foo\"\r\n")
+        .contains("\r\nbar\r\n--");
+
+    assertThat(bodyString)
+        .contains("Content-Disposition: form-data;")
+        .contains("name=\"kit\"\r\n")
+        .contains("\r\nkat\r\n--");
+  }
+
+  @Test public void multipartOkHttpArrayPart() throws IOException {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@Part MultipartBody.Part[] part) {
+        return null;
+      }
+    }
+
+    MultipartBody.Part part1 = MultipartBody.Part.createFormData("foo", "bar");
+    MultipartBody.Part part2 = MultipartBody.Part.createFormData("kit", "kat");
+    Request request =
+        buildRequest(Example.class, new Object[] { new MultipartBody.Part[] { part1, part2 } });
+    assertThat(request.method()).isEqualTo("POST");
+    assertThat(request.headers().size()).isZero();
+    assertThat(request.url().toString()).isEqualTo("http://example.com/foo/bar/");
+
+    RequestBody body = request.body();
+    Buffer buffer = new Buffer();
+    body.writeTo(buffer);
+    String bodyString = buffer.readUtf8();
+
+    assertThat(bodyString)
+        .contains("Content-Disposition: form-data;")
+        .contains("name=\"foo\"\r\n")
+        .contains("\r\nbar\r\n--");
+
+    assertThat(bodyString)
+        .contains("Content-Disposition: form-data;")
+        .contains("name=\"kit\"\r\n")
+        .contains("\r\nkat\r\n--");
+  }
+
+  @Test public void multipartOkHttpPartWithFilename() throws IOException {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@Part MultipartBody.Part part) {
+        return null;
+      }
+    }
+
+    MultipartBody.Part part =
+        MultipartBody.Part.createFormData("kit", "kit.txt", RequestBody.create(null, "kat"));
+    Request request = buildRequest(Example.class, part);
+    assertThat(request.method()).isEqualTo("POST");
+    assertThat(request.headers().size()).isZero();
+    assertThat(request.url().toString()).isEqualTo("http://example.com/foo/bar/");
+
+    RequestBody body = request.body();
+    Buffer buffer = new Buffer();
+    body.writeTo(buffer);
+    String bodyString = buffer.readUtf8();
+
+    assertThat(bodyString)
+        .contains("Content-Disposition: form-data;")
+        .contains("name=\"kit\"; filename=\"kit.txt\"\r\n")
+        .contains("\r\nkat\r\n--");
+  }
+
   @Test public void multipartIterable() throws IOException {
     class Example {
       @Multipart //
@@ -1407,6 +1649,44 @@ public final class RequestBuilderTest {
         .contains("Content-Disposition: form-data;")
         .contains("name=\"ping\"")
         .contains("\r\npong2\r\n--");
+  }
+
+  @Test public void multipartIterableOkHttpPart() {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@Part("ping") List<MultipartBody.Part> part) {
+        return null;
+      }
+    }
+
+    try {
+      buildRequest(Example.class, new Object[] { null });
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertThat(e).hasMessage(
+          "@Part parameters using the MultipartBody.Part must not include a part name in the annotation. (parameter #1)\n"
+              + "    for method Example.method");
+    }
+  }
+
+  @Test public void multipartArrayOkHttpPart() {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@Part("ping") MultipartBody.Part[] part) {
+        return null;
+      }
+    }
+
+    try {
+      buildRequest(Example.class, new Object[] { null });
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertThat(e).hasMessage(
+          "@Part parameters using the MultipartBody.Part must not include a part name in the annotation. (parameter #1)\n"
+              + "    for method Example.method");
+    }
   }
 
   @Test public void multipartWithEncoding() throws IOException {
@@ -1511,6 +1791,44 @@ public final class RequestBuilderTest {
         .contains("name=\"kit\"")
         .contains("Content-Transfer-Encoding: 8-bit")
         .contains("\r\nkat\r\n--");
+  }
+
+  @Test public void multipartPartMapRejectsNonStringKeys() {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@PartMap Map<Object, RequestBody> parts) {
+        return null;
+      }
+    }
+
+    try {
+      buildRequest(Example.class, new Object[] { null });
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertThat(e).hasMessage(
+          "@PartMap keys must be of type String: class java.lang.Object (parameter #1)\n"
+              + "    for method Example.method");
+    }
+  }
+
+  @Test public void multipartPartMapRejectsOkHttpPartValues() {
+    class Example {
+      @Multipart //
+      @POST("/foo/bar/") //
+      Call<ResponseBody> method(@PartMap Map<String, MultipartBody.Part> parts) {
+        return null;
+      }
+    }
+
+    try {
+      buildRequest(Example.class, new Object[] { null });
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertThat(e).hasMessage(
+          "@PartMap values cannot be MultipartBody.Part. Use @Part List<Part> or a different value type instead. (parameter #1)\n"
+              + "    for method Example.method");
+    }
   }
 
   @Test public void multipartPartMapRejectsNull() {
@@ -2046,10 +2364,11 @@ public final class RequestBuilderTest {
         .build();
 
     Method method = TestingUtils.onlyMethod(cls);
-    MethodHandler handler = retrofit.loadMethodHandler(method);
-    Call<?> invoke = (Call<?>) handler.invoke(args);
+    ServiceMethod<?> serviceMethod = retrofit.loadServiceMethod(method);
+    OkHttpCall<?> okHttpCall = new OkHttpCall<>(serviceMethod, args);
+    Call<?> call = (Call<?>) serviceMethod.callAdapter.adapt(okHttpCall);
     try {
-      invoke.execute();
+      call.execute();
       throw new AssertionError();
     } catch (UnsupportedOperationException ignored) {
       return requestRef.get();

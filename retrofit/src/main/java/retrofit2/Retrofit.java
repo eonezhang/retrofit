@@ -21,7 +21,6 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +34,7 @@ import retrofit2.http.HTTP;
 import retrofit2.http.Header;
 import retrofit2.http.Url;
 
+import static java.util.Collections.unmodifiableList;
 import static retrofit2.Utils.checkNotNull;
 
 /**
@@ -43,36 +43,36 @@ import static retrofit2.Utils.checkNotNull;
  * the builder} and pass your interface to {@link #create} to generate an implementation.
  * <p>
  * For example,
- * <pre>{@code
+ * <pre><code>
  * Retrofit retrofit = new Retrofit.Builder()
- *     .baseUrl("http://api.example.com")
+ *     .baseUrl("https://api.example.com/")
  *     .addConverterFactory(GsonConverterFactory.create())
  *     .build();
  *
  * MyApi api = retrofit.create(MyApi.class);
  * Response<User> user = api.getUser().execute();
- * }</pre>
+ * </code></pre>
  *
  * @author Bob Lee (bob@squareup.com)
  * @author Jake Wharton (jw@squareup.com)
  */
 public final class Retrofit {
-  private final Map<Method, MethodHandler> methodHandlerCache = new LinkedHashMap<>();
+  private final Map<Method, ServiceMethod> serviceMethodCache = new LinkedHashMap<>();
 
   private final okhttp3.Call.Factory callFactory;
-  private final BaseUrl baseUrl;
+  private final HttpUrl baseUrl;
   private final List<Converter.Factory> converterFactories;
   private final List<CallAdapter.Factory> adapterFactories;
   private final Executor callbackExecutor;
   private final boolean validateEagerly;
 
-  Retrofit(okhttp3.Call.Factory callFactory, BaseUrl baseUrl,
+  Retrofit(okhttp3.Call.Factory callFactory, HttpUrl baseUrl,
       List<Converter.Factory> converterFactories, List<CallAdapter.Factory> adapterFactories,
       Executor callbackExecutor, boolean validateEagerly) {
     this.callFactory = callFactory;
     this.baseUrl = baseUrl;
-    this.converterFactories = converterFactories;
-    this.adapterFactories = adapterFactories;
+    this.converterFactories = unmodifiableList(converterFactories); // Defensive copy at call site.
+    this.adapterFactories = unmodifiableList(adapterFactories); // Defensive copy at call site.
     this.callbackExecutor = callbackExecutor;
     this.validateEagerly = validateEagerly;
   }
@@ -102,7 +102,7 @@ public final class Retrofit {
    * <ul>
    * <li>{@link retrofit2.http.FormUrlEncoded @FormUrlEncoded} - Form-encoded data with key-value
    * pairs specified by the {@link retrofit2.http.Field @Field} parameter annotation.
-   * <li>{@link retrofit2.http.Multipart @Multipart} - RFC 2388-compliant multi-part data with
+   * <li>{@link retrofit2.http.Multipart @Multipart} - RFC 2388-compliant multipart data with
    * parts specified by the {@link retrofit2.http.Part @Part} parameter annotation.
    * </ul>
    * <p>
@@ -142,7 +142,9 @@ public final class Retrofit {
             if (platform.isDefaultMethod(method)) {
               return platform.invokeDefaultMethod(method, service, proxy, args);
             }
-            return loadMethodHandler(method).invoke(args);
+            ServiceMethod serviceMethod = loadServiceMethod(method);
+            OkHttpCall okHttpCall = new OkHttpCall<>(serviceMethod, args);
+            return serviceMethod.callAdapter.adapt(okHttpCall);
           }
         });
   }
@@ -151,21 +153,21 @@ public final class Retrofit {
     Platform platform = Platform.get();
     for (Method method : service.getDeclaredMethods()) {
       if (!platform.isDefaultMethod(method)) {
-        loadMethodHandler(method);
+        loadServiceMethod(method);
       }
     }
   }
 
-  MethodHandler loadMethodHandler(Method method) {
-    MethodHandler handler;
-    synchronized (methodHandlerCache) {
-      handler = methodHandlerCache.get(method);
-      if (handler == null) {
-        handler = MethodHandler.create(this, method);
-        methodHandlerCache.put(method, handler);
+  ServiceMethod loadServiceMethod(Method method) {
+    ServiceMethod result;
+    synchronized (serviceMethodCache) {
+      result = serviceMethodCache.get(method);
+      if (result == null) {
+        result = new ServiceMethod.Builder(this, method).build();
+        serviceMethodCache.put(method, result);
       }
     }
-    return handler;
+    return result;
   }
 
   /**
@@ -176,12 +178,17 @@ public final class Retrofit {
     return callFactory;
   }
 
-  public BaseUrl baseUrl() {
+  /** The API base URL. */
+  public HttpUrl baseUrl() {
     return baseUrl;
   }
 
+  /**
+   * Returns a list of the factories tried when creating a
+   * {@linkplain #callAdapter(Type, Annotation[])} call adapter}.
+   */
   public List<CallAdapter.Factory> callAdapterFactories() {
-    return Collections.unmodifiableList(adapterFactories);
+    return adapterFactories;
   }
 
   /**
@@ -231,10 +238,13 @@ public final class Retrofit {
   }
 
   /**
-   * TODO
+   * Returns a list of the factories tried when creating a
+   * {@linkplain #requestBodyConverter(Type, Annotation[], Annotation[]) request body converter}, a
+   * {@linkplain #responseBodyConverter(Type, Annotation[]) response body converter}, or a
+   * {@linkplain #stringConverter(Type, Annotation[]) string converter}.
    */
   public List<Converter.Factory> converterFactories() {
-    return Collections.unmodifiableList(converterFactories);
+    return converterFactories;
   }
 
   /**
@@ -375,7 +385,7 @@ public final class Retrofit {
   public static final class Builder {
     private Platform platform;
     private okhttp3.Call.Factory callFactory;
-    private BaseUrl baseUrl;
+    private HttpUrl baseUrl;
     private List<Converter.Factory> converterFactories = new ArrayList<>();
     private List<CallAdapter.Factory> adapterFactories = new ArrayList<>();
     private Executor callbackExecutor;
@@ -416,7 +426,7 @@ public final class Retrofit {
     }
 
     /**
-     * Set a fixed API base URL.
+     * Set the API base URL.
      *
      * @see #baseUrl(HttpUrl)
      */
@@ -430,7 +440,7 @@ public final class Retrofit {
     }
 
     /**
-     * Set a fixed API base URL.
+     * Set the API base URL.
      * <p>
      * The specified endpoint values (such as with {@link GET @GET}) are resolved against this
      * value using {@link HttpUrl#resolve(String)}. The behavior of this matches that of an
@@ -479,26 +489,13 @@ public final class Retrofit {
      * Endpoint: //github.com/square/retrofit/<br>
      * Result: http://github.com/square/retrofit/ (note the scheme stays 'http')
      */
-    public Builder baseUrl(final HttpUrl baseUrl) {
+    public Builder baseUrl(HttpUrl baseUrl) {
       checkNotNull(baseUrl, "baseUrl == null");
       List<String> pathSegments = baseUrl.pathSegments();
       if (!"".equals(pathSegments.get(pathSegments.size() - 1))) {
         throw new IllegalArgumentException("baseUrl must end in /: " + baseUrl);
       }
-      return baseUrl(new BaseUrl() {
-        @Override public HttpUrl url() {
-          return baseUrl;
-        }
-      });
-    }
-
-    /**
-     * Set an API base URL which can change over time.
-     *
-     * @see #baseUrl(HttpUrl)
-     */
-    public Builder baseUrl(BaseUrl baseUrl) {
-      this.baseUrl = checkNotNull(baseUrl, "baseUrl == null");
+      this.baseUrl = baseUrl;
       return this;
     }
 

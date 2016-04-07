@@ -1,4 +1,18 @@
-// Copyright 2013 Square, Inc.
+/*
+ * Copyright (C) 2013 Square, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package retrofit2;
 
 import java.io.IOException;
@@ -15,6 +29,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
@@ -38,6 +53,7 @@ import retrofit2.http.Query;
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
 import static okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_START;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
@@ -62,7 +78,6 @@ public final class RetrofitTest {
     @POST("/") Call<ResponseBody> postRequestBody(@Body RequestBody body);
     @GET("/") Call<ResponseBody> queryString(@Query("foo") String foo);
     @GET("/") Call<ResponseBody> queryObject(@Query("foo") Object foo);
-
   }
   interface FutureMethod {
     @GET("/") Future<String> method();
@@ -96,6 +111,9 @@ public final class RetrofitTest {
 
     @Retention(RUNTIME)
     @interface Foo {}
+  }
+  interface MutableParameters {
+    @GET("/") Call<String> method(@Query("i") AtomicInteger value);
   }
 
   @SuppressWarnings("EqualsBetweenInconvertibleTypes") // We are explicitly testing this behavior.
@@ -482,6 +500,22 @@ public final class RetrofitTest {
     assertThat(response.body()).isNull();
   }
 
+  @Test public void voidResponsesArePooled() throws Exception {
+    Retrofit retrofit = new Retrofit.Builder()
+        .baseUrl(server.url("/"))
+        .build();
+    CallMethod example = retrofit.create(CallMethod.class);
+
+    server.enqueue(new MockResponse().setBody("abc"));
+    server.enqueue(new MockResponse().setBody("def"));
+
+    example.getVoid().execute();
+    example.getVoid().execute();
+
+    assertThat(server.takeRequest().getSequenceNumber()).isEqualTo(0);
+    assertThat(server.takeRequest().getSequenceNumber()).isEqualTo(1);
+  }
+
   @Test public void responseBodyIncomingAllowed() throws IOException, InterruptedException {
     Retrofit retrofit = new Retrofit.Builder()
         .baseUrl(server.url("/"))
@@ -611,12 +645,6 @@ public final class RetrofitTest {
     } catch (NullPointerException e) {
       assertThat(e).hasMessage("baseUrl == null");
     }
-    try {
-      new Retrofit.Builder().baseUrl((BaseUrl) null);
-      fail();
-    } catch (NullPointerException e) {
-      assertThat(e).hasMessage("baseUrl == null");
-    }
   }
 
   @Test public void baseUrlInvalidThrows() {
@@ -648,9 +676,8 @@ public final class RetrofitTest {
     Retrofit retrofit = new Retrofit.Builder()
         .baseUrl("http://example.com/")
         .build();
-    BaseUrl baseUrl = retrofit.baseUrl();
-    assertThat(baseUrl).isNotNull();
-    assertThat(baseUrl.url().toString()).isEqualTo("http://example.com/");
+    HttpUrl baseUrl = retrofit.baseUrl();
+    assertThat(baseUrl).isEqualTo(HttpUrl.parse("http://example.com/"));
   }
 
   @Test public void baseHttpUrlPropagated() {
@@ -658,17 +685,7 @@ public final class RetrofitTest {
     Retrofit retrofit = new Retrofit.Builder()
         .baseUrl(url)
         .build();
-    BaseUrl baseUrl = retrofit.baseUrl();
-    assertThat(baseUrl).isNotNull();
-    assertThat(baseUrl.url()).isSameAs(url);
-  }
-
-  @Test public void baseUrlPropagated() {
-    BaseUrl baseUrl = mock(BaseUrl.class);
-    Retrofit retrofit = new Retrofit.Builder()
-        .baseUrl(baseUrl)
-        .build();
-    assertThat(retrofit.baseUrl()).isSameAs(baseUrl);
+    assertThat(retrofit.baseUrl()).isSameAs(url);
   }
 
   @Test public void clientNullThrows() {
@@ -1246,5 +1263,40 @@ public final class RetrofitTest {
 
     verify(executor).execute(any(Runnable.class));
     verifyNoMoreInteractions(executor);
+  }
+
+  /** Confirm that Retrofit encodes parameters when the call is executed, and not earlier. */
+  @Test public void argumentCapture() throws Exception {
+    AtomicInteger i = new AtomicInteger();
+
+    server.enqueue(new MockResponse().setBody("a"));
+    server.enqueue(new MockResponse().setBody("b"));
+
+    Retrofit retrofit = new Retrofit.Builder()
+        .baseUrl(server.url("/"))
+        .addConverterFactory(new ToStringConverterFactory())
+        .build();
+    MutableParameters mutableParameters = retrofit.create(MutableParameters.class);
+
+    i.set(100);
+    Call<String> call1 = mutableParameters.method(i);
+
+    i.set(101);
+    Response<String> response1 = call1.execute();
+
+    i.set(102);
+    assertEquals("a", response1.body());
+    assertEquals("/?i=101", server.takeRequest().getPath());
+
+    i.set(200);
+    Call<String> call2 = call1.clone();
+
+    i.set(201);
+    Response<String> response2 = call2.execute();
+
+    i.set(202);
+    assertEquals("b", response2.body());
+
+    assertEquals("/?i=201", server.takeRequest().getPath());
   }
 }

@@ -15,63 +15,50 @@
  */
 package retrofit2;
 
-import android.net.Uri;
 import java.io.IOException;
 import java.lang.reflect.Array;
-import java.net.URI;
 import java.util.Map;
 import okhttp3.Headers;
+import okhttp3.MultipartBody;
 import okhttp3.RequestBody;
 
 import static retrofit2.Utils.checkNotNull;
 
-abstract class RequestAction<T> {
-  abstract void perform(RequestBuilder builder, T value) throws IOException;
+abstract class ParameterHandler<T> {
+  abstract void apply(RequestBuilder builder, T value) throws IOException;
 
-  final RequestAction<Iterable<T>> iterable() {
-    return new RequestAction<Iterable<T>>() {
-      @Override void perform(RequestBuilder builder, Iterable<T> values) throws IOException {
+  final ParameterHandler<Iterable<T>> iterable() {
+    return new ParameterHandler<Iterable<T>>() {
+      @Override void apply(RequestBuilder builder, Iterable<T> values) throws IOException {
         if (values == null) return; // Skip null values.
 
         for (T value : values) {
-          RequestAction.this.perform(builder, value);
+          ParameterHandler.this.apply(builder, value);
         }
       }
     };
   }
 
-  final RequestAction<Object> array() {
-    return new RequestAction<Object>() {
-      @Override void perform(RequestBuilder builder, Object values) throws IOException {
+  final ParameterHandler<Object> array() {
+    return new ParameterHandler<Object>() {
+      @Override void apply(RequestBuilder builder, Object values) throws IOException {
         if (values == null) return; // Skip null values.
 
         for (int i = 0, size = Array.getLength(values); i < size; i++) {
           //noinspection unchecked
-          RequestAction.this.perform(builder, (T) Array.get(values, i));
+          ParameterHandler.this.apply(builder, (T) Array.get(values, i));
         }
       }
     };
   }
 
-  static final class StringUrl extends RequestAction<String> {
-    @Override void perform(RequestBuilder builder, String value) {
+  static final class RelativeUrl extends ParameterHandler<Object> {
+    @Override void apply(RequestBuilder builder, Object value) {
       builder.setRelativeUrl(value);
     }
   }
 
-  static final class JavaUriUrl extends RequestAction<URI> {
-    @Override void perform(RequestBuilder builder, URI value) {
-      builder.setRelativeUrl(value.toString());
-    }
-  }
-
-  static final class AndroidUriUrl extends RequestAction<Uri> {
-    @Override void perform(RequestBuilder builder, Uri value) {
-      builder.setRelativeUrl(value.toString());
-    }
-  }
-
-  static final class Header<T> extends RequestAction<T> {
+  static final class Header<T> extends ParameterHandler<T> {
     private final String name;
     private final Converter<T, String> valueConverter;
 
@@ -80,13 +67,13 @@ abstract class RequestAction<T> {
       this.valueConverter = valueConverter;
     }
 
-    @Override void perform(RequestBuilder builder, T value) throws IOException {
+    @Override void apply(RequestBuilder builder, T value) throws IOException {
       if (value == null) return; // Skip null values.
       builder.addHeader(name, valueConverter.convert(value));
     }
   }
 
-  static final class Path<T> extends RequestAction<T> {
+  static final class Path<T> extends ParameterHandler<T> {
     private final String name;
     private final Converter<T, String> valueConverter;
     private final boolean encoded;
@@ -97,7 +84,7 @@ abstract class RequestAction<T> {
       this.encoded = encoded;
     }
 
-    @Override void perform(RequestBuilder builder, T value) throws IOException {
+    @Override void apply(RequestBuilder builder, T value) throws IOException {
       if (value == null) {
         throw new IllegalArgumentException(
             "Path parameter \"" + name + "\" value must not be null.");
@@ -106,7 +93,7 @@ abstract class RequestAction<T> {
     }
   }
 
-  static final class Query<T> extends RequestAction<T> {
+  static final class Query<T> extends ParameterHandler<T> {
     private final String name;
     private final Converter<T, String> valueConverter;
     private final boolean encoded;
@@ -117,13 +104,13 @@ abstract class RequestAction<T> {
       this.encoded = encoded;
     }
 
-    @Override void perform(RequestBuilder builder, T value) throws IOException {
+    @Override void apply(RequestBuilder builder, T value) throws IOException {
       if (value == null) return; // Skip null values.
       builder.addQueryParam(name, valueConverter.convert(value), encoded);
     }
   }
 
-  static final class QueryMap<T> extends RequestAction<Map<String, T>> {
+  static final class QueryMap<T> extends ParameterHandler<Map<String, T>> {
     private final Converter<T, String> valueConverter;
     private final boolean encoded;
 
@@ -132,7 +119,7 @@ abstract class RequestAction<T> {
       this.encoded = encoded;
     }
 
-    @Override void perform(RequestBuilder builder, Map<String, T> value) throws IOException {
+    @Override void apply(RequestBuilder builder, Map<String, T> value) throws IOException {
       if (value == null) {
         throw new IllegalArgumentException("Query map was null.");
       }
@@ -152,7 +139,7 @@ abstract class RequestAction<T> {
     }
   }
 
-  static final class Field<T> extends RequestAction<T> {
+  static final class Field<T> extends ParameterHandler<T> {
     private final String name;
     private final Converter<T, String> valueConverter;
     private final boolean encoded;
@@ -163,13 +150,13 @@ abstract class RequestAction<T> {
       this.encoded = encoded;
     }
 
-    @Override void perform(RequestBuilder builder, T value) throws IOException {
+    @Override void apply(RequestBuilder builder, T value) throws IOException {
       if (value == null) return; // Skip null values.
       builder.addFormField(name, valueConverter.convert(value), encoded);
     }
   }
 
-  static final class FieldMap<T> extends RequestAction<Map<String, T>> {
+  static final class FieldMap<T> extends ParameterHandler<Map<String, T>> {
     private final Converter<T, String> valueConverter;
     private final boolean encoded;
 
@@ -178,7 +165,7 @@ abstract class RequestAction<T> {
       this.encoded = encoded;
     }
 
-    @Override void perform(RequestBuilder builder, Map<String, T> value) throws IOException {
+    @Override void apply(RequestBuilder builder, Map<String, T> value) throws IOException {
       if (value == null) {
         throw new IllegalArgumentException("Field map was null.");
       }
@@ -198,7 +185,7 @@ abstract class RequestAction<T> {
     }
   }
 
-  static final class Part<T> extends RequestAction<T> {
+  static final class Part<T> extends ParameterHandler<T> {
     private final Headers headers;
     private final Converter<T, RequestBody> converter;
 
@@ -207,7 +194,7 @@ abstract class RequestAction<T> {
       this.converter = converter;
     }
 
-    @Override void perform(RequestBuilder builder, T value) {
+    @Override void apply(RequestBuilder builder, T value) {
       if (value == null) return; // Skip null values.
 
       RequestBody body;
@@ -220,7 +207,20 @@ abstract class RequestAction<T> {
     }
   }
 
-  static final class PartMap<T> extends RequestAction<Map<String, T>> {
+  static final class RawPart extends ParameterHandler<MultipartBody.Part> {
+    static final RawPart INSTANCE = new RawPart();
+
+    private RawPart() {
+    }
+
+    @Override void apply(RequestBuilder builder, MultipartBody.Part value) throws IOException {
+      if (value != null) { // Skip null values.
+        builder.addPart(value);
+      }
+    }
+  }
+
+  static final class PartMap<T> extends ParameterHandler<Map<String, T>> {
     private final Converter<T, RequestBody> valueConverter;
     private final String transferEncoding;
 
@@ -229,7 +229,7 @@ abstract class RequestAction<T> {
       this.transferEncoding = transferEncoding;
     }
 
-    @Override void perform(RequestBuilder builder, Map<String, T> value) throws IOException {
+    @Override void apply(RequestBuilder builder, Map<String, T> value) throws IOException {
       if (value == null) {
         throw new IllegalArgumentException("Part map was null.");
       }
@@ -254,14 +254,14 @@ abstract class RequestAction<T> {
     }
   }
 
-  static final class Body<T> extends RequestAction<T> {
+  static final class Body<T> extends ParameterHandler<T> {
     private final Converter<T, RequestBody> converter;
 
     Body(Converter<T, RequestBody> converter) {
       this.converter = converter;
     }
 
-    @Override void perform(RequestBuilder builder, T value) {
+    @Override void apply(RequestBuilder builder, T value) {
       if (value == null) {
         throw new IllegalArgumentException("Body parameter value must not be null.");
       }
